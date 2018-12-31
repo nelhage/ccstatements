@@ -16,6 +16,7 @@ import (
 var (
 	TxnPat     = regexp.MustCompile(`(\d{1,2}/\d{1,2})\s*&?\s*(.*)   \s+((-\s*)?[0-9,]*\.\d+)`)
 	SectionPat = regexp.MustCompile(`^\s*(PAYMENTS AND OTHER CREDITS|PURCHASE|FEES CHARGED)`)
+	HeaderPat  = regexp.MustCompile(`^\s*((?:\S|\s\S)+)  \s+((?:[+-]?\s*[$][0-9,]+\.\d{2})|(?:\d{2}/\d{2}/\d{2} - \d{2}/\d{2}/\d{2}))`)
 )
 
 type rawTxn struct {
@@ -23,6 +24,14 @@ type rawTxn struct {
 	date       string
 	descriptor string
 	amount     string
+}
+
+func parseAmount(amount string) (int64, error) {
+	amount = strings.Replace(amount, ",", "", -1)
+	amount = strings.Replace(amount, " ", "", -1)
+	amount = strings.Replace(amount, ".", "", 1)
+	amount = strings.Replace(amount, "$", "", 1)
+	return strconv.ParseInt(amount, 10, 64)
 }
 
 func formatCents(amt int64) string {
@@ -45,6 +54,7 @@ func processOne(path string) {
 		log.Fatal("starting gs(%q): %v", path, err)
 	}
 
+	headers := make(map[string]string)
 	var raw []rawTxn
 	var section string
 
@@ -60,6 +70,12 @@ func processOne(path string) {
 		sectMatch := SectionPat.FindSubmatch(line)
 		if sectMatch != nil {
 			section = string(sectMatch[1])
+			continue
+		}
+		hdrMatch := HeaderPat.FindSubmatch(line)
+		if hdrMatch != nil {
+			headers[string(hdrMatch[1])] = string(hdrMatch[2])
+			continue
 		}
 		matches := TxnPat.FindSubmatch(line)
 		if matches == nil {
@@ -80,17 +96,39 @@ func processOne(path string) {
 
 	totals := make(map[string]int64)
 	for _, txn := range raw {
-		amt := txn.amount
-		amt = strings.Replace(amt, ",", "", -1)
-		amt = strings.Replace(amt, ".", "", -1)
-		cents, err := strconv.ParseInt(amt, 10, 64)
+		cents, err := parseAmount(txn.amount)
 		if err != nil {
-			fmt.Printf("parse(%s): %v", amt, err)
+			fmt.Printf("parse(%s): %v", txn.amount, err)
 			continue
 		}
 		totals[txn.category] += cents
 	}
-	fmt.Printf("TOTALS -- %s\n", path)
+	expectations := []struct {
+		section, header string
+	}{
+		{"PAYMENTS AND OTHER CREDITS", "Payment, Credits"},
+		{"PURCHASE", "Purchases"},
+		{"FEES CHARGED", "Fees Charged"},
+	}
+	for _, expect := range expectations {
+		hdr, ok := headers[expect.header]
+		if !ok {
+			log.Fatalf("Missing header: %q", expect.header)
+		}
+		headerAmt, err := parseAmount(hdr)
+		if err != nil {
+			log.Fatalf("Parsing header(%q): %v", expect.header, err)
+		}
+		if headerAmt != totals[expect.section] {
+			log.Fatalf("Mismatch: %v(%s) != %v(%s)",
+				expect.section, formatCents(totals[expect.section]),
+				expect.header, formatCents(headerAmt),
+			)
+		}
+	}
+
+	fmt.Printf("# statement: %s\n", path)
+	fmt.Printf("TOTALS\n")
 	for cat, amt := range totals {
 		fmt.Printf("%30s %s\n", cat, formatCents(amt))
 	}
