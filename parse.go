@@ -43,15 +43,15 @@ func formatCents(amt int64) string {
 	return fmt.Sprintf("%c%d.%02d", signum, amt/100, amt%100)
 }
 
-func processOne(path string) {
+func processOne(path string) error {
 	cmd := exec.Command("gs", "-sDEVICE=txtwrite", "-o", "-", path)
 	cmd.Stderr = os.Stderr
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		log.Fatalf("open pipe: %v", err)
+		return err
 	}
 	if err := cmd.Start(); err != nil {
-		log.Fatal("starting gs(%q): %v", path, err)
+		return fmt.Errorf("starting gs: %v", err)
 	}
 
 	headers := make(map[string]string)
@@ -65,7 +65,7 @@ func processOne(path string) {
 			if err == io.EOF {
 				break
 			}
-			log.Fatalf("read: %v", err)
+			return fmt.Errorf("read: %v", err)
 		}
 		sectMatch := SectionPat.FindSubmatch(line)
 		if sectMatch != nil {
@@ -91,15 +91,14 @@ func processOne(path string) {
 	}
 
 	if err := cmd.Wait(); err != nil {
-		log.Fatal("converting to text: %q: %v", path, err)
+		return fmt.Errorf("converting to text: %v", err)
 	}
 
 	totals := make(map[string]int64)
 	for _, txn := range raw {
 		cents, err := parseAmount(txn.amount)
 		if err != nil {
-			fmt.Printf("parse(%s): %v", txn.amount, err)
-			continue
+			return fmt.Errorf("parse(%s): %v", txn.amount, err)
 		}
 		totals[txn.category] += cents
 	}
@@ -113,14 +112,14 @@ func processOne(path string) {
 	for _, expect := range expectations {
 		hdr, ok := headers[expect.header]
 		if !ok {
-			log.Fatalf("Missing header: %q", expect.header)
+			return fmt.Errorf("Missing header: %q", expect.header)
 		}
 		headerAmt, err := parseAmount(hdr)
 		if err != nil {
-			log.Fatalf("Parsing header(%q): %v", expect.header, err)
+			return fmt.Errorf("Parsing header(%q): %v", expect.header, err)
 		}
 		if headerAmt != totals[expect.section] {
-			log.Fatalf("Mismatch: %v(%s) != %v(%s)",
+			return fmt.Errorf("Mismatch: %v(%s) != %v(%s)",
 				expect.section, formatCents(totals[expect.section]),
 				expect.header, formatCents(headerAmt),
 			)
@@ -132,10 +131,19 @@ func processOne(path string) {
 	for cat, amt := range totals {
 		fmt.Printf("%30s %s\n", cat, formatCents(amt))
 	}
+
+	return nil
 }
 
 func main() {
+	ok := true
 	for _, path := range os.Args[1:] {
-		processOne(path)
+		if err := processOne(path); err != nil {
+			ok = false
+			log.Printf("process(%q): %v", path, err)
+		}
+	}
+	if !ok {
+		os.Exit(1)
 	}
 }
