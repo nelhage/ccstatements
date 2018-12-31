@@ -19,6 +19,11 @@ var (
 	HeaderPat  = regexp.MustCompile(`^\s*((?:\S|\s\S)+)  [ \t` + "`" + `]+((?:[+-]?\s*[$][0-9,]+\.\d{2})|(?:\d{2}/\d{2}/\d{2} - \d{2}/\d{2}/\d{2}))`)
 )
 
+type rawFile struct {
+	txns    []rawTxn
+	headers map[string]string
+}
+
 type rawTxn struct {
 	category   string
 	date       string
@@ -54,8 +59,9 @@ func processOne(path string) error {
 		return fmt.Errorf("starting gs: %v", err)
 	}
 
-	headers := make(map[string]string)
-	var raw []rawTxn
+	raw := rawFile{
+		headers: make(map[string]string),
+	}
 	var section string
 
 	r := bufio.NewReader(stdout)
@@ -74,7 +80,7 @@ func processOne(path string) error {
 		}
 		hdrMatch := HeaderPat.FindSubmatch(line)
 		if hdrMatch != nil {
-			headers[string(hdrMatch[1])] = string(hdrMatch[2])
+			raw.headers[string(hdrMatch[1])] = string(hdrMatch[2])
 			continue
 		}
 		matches := TxnPat.FindSubmatch(line)
@@ -82,7 +88,7 @@ func processOne(path string) error {
 			continue
 		}
 		// fmt.Printf("%s,%s,%s\n", matches[1], bytes.TrimRight(matches[2], " "), matches[3])
-		raw = append(raw, rawTxn{
+		raw.txns = append(raw.txns, rawTxn{
 			section,
 			string(matches[1]),
 			string(bytes.TrimRight(matches[2], " ")),
@@ -95,7 +101,7 @@ func processOne(path string) error {
 	}
 
 	totals := make(map[string]int64)
-	for _, txn := range raw {
+	for _, txn := range raw.txns {
 		cents, err := parseAmount(txn.amount)
 		if err != nil {
 			return fmt.Errorf("parse(%s): %v", txn.amount, err)
@@ -110,7 +116,7 @@ func processOne(path string) error {
 		{"FEES CHARGED", "Fees Charged"},
 	}
 	for _, expect := range expectations {
-		hdr, ok := headers[expect.header]
+		hdr, ok := raw.headers[expect.header]
 		if !ok {
 			return fmt.Errorf("Missing header: %q", expect.header)
 		}
