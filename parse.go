@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"encoding/csv"
 	"fmt"
 	"io"
 	"log"
@@ -11,12 +12,14 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var (
 	TxnPat     = regexp.MustCompile(`(\d{1,2}/\d{1,2})\s*&?\s*(.*)   \s+((-\s*)?[0-9,]*\.\d+)`)
 	SectionPat = regexp.MustCompile(`^\s*(PAYMENTS AND OTHER CREDITS|PURCHASE|FEES CHARGED)`)
-	HeaderPat  = regexp.MustCompile(`^\s*((?:\S|\s\S)+)  [ \t` + "`" + `]+((?:[+-]?\s*[$][0-9,]+\.\d{2})|(?:\d{2}/\d{2}/\d{2} - \d{2}/\d{2}/\d{2}))`)
+	HeaderPat  = regexp.MustCompile(`^\s*((?:\S|\s\S)+)  [ \t]+((?:[+-]?\s*[$][0-9,]+\.\d{2})|(?:\d{2}/\d{2}/\d{2} - \d{2}/\d{2}/\d{2}))`)
+	DatePat    = regexp.MustCompile(`(\d{2}/\d{2}/\d{2}) - (\d{2}/\d{2}/\d{2})`)
 )
 
 type rawFile struct {
@@ -29,6 +32,18 @@ type rawTxn struct {
 	date       string
 	descriptor string
 	amount     string
+}
+
+type Transaction struct {
+	Category   string
+	Date       time.Time
+	Descriptor string
+	Amount     int64
+}
+
+type Statement struct {
+	StartDate, EndDate time.Time
+	Transactions       []Transaction
 }
 
 func parseAmount(amount string) (int64, error) {
@@ -46,6 +61,76 @@ func formatCents(amt int64) string {
 		amt = -amt
 	}
 	return fmt.Sprintf("%c%d.%02d", signum, amt/100, amt%100)
+}
+
+func interpret(raw *rawFile) (*Statement, error) {
+	dateHdr, ok := raw.headers["Opening/Closing Date"]
+	if !ok {
+		return nil, fmt.Errorf("Missing date header. Got: %#v", raw.headers)
+	}
+	stmt := &Statement{}
+
+	dateMatch := DatePat.FindStringSubmatch(dateHdr)
+	if dateMatch != nil {
+		stmt.StartDate, _ = time.Parse("01/02/06", dateMatch[1])
+		stmt.EndDate, _ = time.Parse("01/02/06", dateMatch[2])
+	}
+	if stmt.StartDate.IsZero() || stmt.EndDate.IsZero() {
+		return nil, fmt.Errorf("Can't parse date header: %s", dateHdr)
+	}
+
+	minDate := stmt.StartDate.AddDate(0, 0, -7)
+	maxDate := stmt.EndDate.AddDate(0, 0, 1)
+	for _, rawTxn := range raw.txns {
+		date, err := time.Parse("01/02", rawTxn.date)
+		if err != nil {
+			return nil, fmt.Errorf("parse date(%v): %v", rawTxn.date, err)
+		}
+		date = time.Date(stmt.EndDate.Year(), date.Month(), date.Day(), 0, 0, 0, 0, time.UTC)
+		if date.After(maxDate) {
+			date = date.AddDate(-1, 0, 0)
+		}
+		if date.After(maxDate) || date.Before(minDate) {
+			return nil, fmt.Errorf("date(%s, interpreted as %s) out of range: %s--%s",
+				rawTxn.date,
+				date.Format("2006-01-02"),
+				minDate.Format("2006-01-02"),
+				maxDate.Format("2006-01-02"),
+			)
+		}
+
+		cents, err := parseAmount(rawTxn.amount)
+
+		if err != nil {
+			return nil, err
+		}
+		stmt.Transactions = append(stmt.Transactions, Transaction{
+			rawTxn.category,
+			date,
+			rawTxn.descriptor,
+			cents,
+		})
+	}
+	return stmt, nil
+}
+
+func writeCsv(path string, stmt *Statement) error {
+	fh, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+	if err != nil {
+		return err
+	}
+	defer fh.Close()
+	write := csv.NewWriter(fh)
+	for _, txn := range stmt.Transactions {
+		write.Write([]string{
+			txn.Category,
+			txn.Date.Format("2006-01-02"),
+			txn.Descriptor,
+			strconv.FormatInt(txn.Amount, 10),
+		})
+	}
+	write.Flush()
+	return write.Error()
 }
 
 func processOne(path string) error {
@@ -72,6 +157,9 @@ func processOne(path string) error {
 				break
 			}
 			return fmt.Errorf("read: %v", err)
+		}
+		if bytes.IndexByte(line, '`') > 0 {
+			line = bytes.Replace(line, []byte{'`'}, nil, -1)
 		}
 		sectMatch := SectionPat.FindSubmatch(line)
 		if sectMatch != nil {
@@ -136,6 +224,15 @@ func processOne(path string) error {
 	fmt.Printf("TOTALS\n")
 	for cat, amt := range totals {
 		fmt.Printf("%30s %s\n", cat, formatCents(amt))
+	}
+
+	stmt, err := interpret(&raw)
+	if err != nil {
+		return err
+	}
+
+	if strings.HasSuffix(path, ".pdf") {
+		return writeCsv(strings.TrimSuffix(path, "pdf")+"csv", stmt)
 	}
 
 	return nil
