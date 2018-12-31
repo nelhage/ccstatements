@@ -16,7 +16,7 @@ import (
 var (
 	TxnPat     = regexp.MustCompile(`(\d{1,2}/\d{1,2})\s*&?\s*(.*)   \s+((-\s*)?[0-9,]*\.\d+)`)
 	SectionPat = regexp.MustCompile(`^\s*(PAYMENTS AND OTHER CREDITS|PURCHASE|FEES CHARGED)`)
-	HeaderPat  = regexp.MustCompile(`^\s*((?:\S|\s\S)+)  \s+((?:[+-]?\s*[$][0-9,]+\.\d{2})|(?:\d{2}/\d{2}/\d{2} - \d{2}/\d{2}/\d{2}))`)
+	HeaderPat  = regexp.MustCompile(`^\s*((?:\S|\s\S)+)  [ \t` + "`" + `]+((?:[+-]?\s*[$][0-9,]+\.\d{2})|(?:\d{2}/\d{2}/\d{2} - \d{2}/\d{2}/\d{2}))`)
 )
 
 type rawTxn struct {
