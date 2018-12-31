@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/csv"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -17,7 +19,7 @@ import (
 
 var (
 	TxnPat     = regexp.MustCompile(`(\d{1,2}/\d{1,2})\s*&?\s*(.*)   \s+((-\s*)?[0-9,]*\.\d+)`)
-	SectionPat = regexp.MustCompile(`^\s*(PAYMENTS AND OTHER CREDITS|PURCHASE|FEES CHARGED)`)
+	SectionPat = regexp.MustCompile(`^\s*(PAYMENTS AND OTHER CREDITS|PURCHASE|FEES CHARGED|PURCHASES AND REDEMPTIONS)\s`)
 	HeaderPat  = regexp.MustCompile(`^\s*((?:\S|\s\S)+)  [ \t]+((?:[+-]?\s*[$][0-9,]+\.\d{2})|(?:\d{2}/\d{2}/\d{2} - \d{2}/\d{2}/\d{2}))`)
 	DatePat    = regexp.MustCompile(`(\d{2}/\d{2}/\d{2}) - (\d{2}/\d{2}/\d{2})`)
 )
@@ -79,7 +81,7 @@ func interpret(raw *rawFile) (*Statement, error) {
 		return nil, fmt.Errorf("Can't parse date header: %s", dateHdr)
 	}
 
-	minDate := stmt.StartDate.AddDate(0, 0, -7)
+	minDate := stmt.StartDate.AddDate(-1, 0, 0)
 	maxDate := stmt.EndDate.AddDate(0, 0, 1)
 	for _, rawTxn := range raw.txns {
 		date, err := time.Parse("01/02", rawTxn.date)
@@ -133,6 +135,20 @@ func writeCsv(path string, stmt *Statement) error {
 	return write.Error()
 }
 
+var (
+	debug = flag.Bool("debug", false, "Debug transactions")
+)
+
+type expectation struct {
+	section, header string
+}
+
+var expectations = []expectation{
+	{"PAYMENTS AND OTHER CREDITS", "Payment, Credits"},
+	{"PURCHASE", "Purchases"},
+	{"FEES CHARGED", "Fees Charged"},
+}
+
 func processOne(path string) error {
 	cmd := exec.Command("gs", "-sDEVICE=txtwrite", "-o", "-", path)
 	cmd.Stderr = os.Stderr
@@ -175,7 +191,16 @@ func processOne(path string) error {
 		if matches == nil {
 			continue
 		}
-		// fmt.Printf("%s,%s,%s\n", matches[1], bytes.TrimRight(matches[2], " "), matches[3])
+		if section == "" {
+			return errors.New("transaction found without a section")
+		}
+		if *debug {
+			fmt.Printf("%s,%s,%s,%s\n",
+				section,
+				matches[1],
+				bytes.TrimRight(matches[2], " "),
+				matches[3])
+		}
 		raw.txns = append(raw.txns, rawTxn{
 			section,
 			string(matches[1]),
@@ -196,13 +221,19 @@ func processOne(path string) error {
 		}
 		totals[txn.category] += cents
 	}
-	expectations := []struct {
-		section, header string
-	}{
-		{"PAYMENTS AND OTHER CREDITS", "Payment, Credits"},
-		{"PURCHASE", "Purchases"},
-		{"FEES CHARGED", "Fees Charged"},
+
+	fmt.Printf("# statement: %s\n", path)
+	fmt.Printf("TOTALS\n")
+	for cat, amt := range totals {
+		fmt.Printf("%30s %s\n", cat, formatCents(amt))
 	}
+	if *debug {
+		fmt.Printf("\nHEADERS\n")
+		for k, v := range raw.headers {
+			fmt.Printf("%30s %s\n", k, v)
+		}
+	}
+
 	for _, expect := range expectations {
 		hdr, ok := raw.headers[expect.header]
 		if !ok {
@@ -220,12 +251,6 @@ func processOne(path string) error {
 		}
 	}
 
-	fmt.Printf("# statement: %s\n", path)
-	fmt.Printf("TOTALS\n")
-	for cat, amt := range totals {
-		fmt.Printf("%30s %s\n", cat, formatCents(amt))
-	}
-
 	stmt, err := interpret(&raw)
 	if err != nil {
 		return err
@@ -239,11 +264,18 @@ func processOne(path string) error {
 }
 
 func main() {
+	var (
+		failFast = flag.Bool("fail-fast", false, "Exit after first parse failure")
+	)
+	flag.Parse()
 	ok := true
-	for _, path := range os.Args[1:] {
+	for _, path := range flag.Args() {
 		if err := processOne(path); err != nil {
 			ok = false
 			log.Printf("process(%q): %v", path, err)
+			if *failFast {
+				break
+			}
 		}
 	}
 	if !ok {
