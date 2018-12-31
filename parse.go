@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"regexp"
 	"strconv"
 	"strings"
@@ -34,16 +35,20 @@ func formatCents(amt int64) string {
 }
 
 func processOne(path string) {
-	fh, err := os.Open(path)
+	cmd := exec.Command("gs", "-sDEVICE=txtwrite", "-o", "-", path)
+	cmd.Stderr = os.Stderr
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		log.Fatalf("open(%q): %v", path, err)
+		log.Fatalf("open pipe: %v", err)
 	}
-	defer fh.Close()
+	if err := cmd.Start(); err != nil {
+		log.Fatal("starting gs(%q): %v", path, err)
+	}
 
 	var raw []rawTxn
 	var section string
 
-	r := bufio.NewReader(fh)
+	r := bufio.NewReader(stdout)
 	for {
 		line, err := r.ReadBytes('\n')
 		if err != nil {
@@ -67,6 +72,10 @@ func processOne(path string) {
 			string(bytes.TrimRight(matches[2], " ")),
 			string(matches[3]),
 		})
+	}
+
+	if err := cmd.Wait(); err != nil {
+		log.Fatal("converting to text: %q: %v", path, err)
 	}
 
 	totals := make(map[string]int64)
