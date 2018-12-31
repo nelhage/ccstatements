@@ -22,11 +22,13 @@ var (
 	SectionPat = regexp.MustCompile(`^\s*(PAYMENTS AND OTHER CREDITS|PURCHASE|FEES CHARGED|PURCHASES AND REDEMPTIONS)\s`)
 	HeaderPat  = regexp.MustCompile(`^\s*((?:\S|\s\S)+)  [ \t]+((?:[+-]?\s*[$][0-9,]+\.\d{2})|(?:\d{2}/\d{2}/\d{2} - \d{2}/\d{2}/\d{2}))`)
 	DatePat    = regexp.MustCompile(`(\d{2}/\d{2}/\d{2}) - (\d{2}/\d{2}/\d{2})`)
+	PANPat     = regexp.MustCompile(`Account Number:\s*(\d{4} \d{4} \d{4} (\d{4}))`)
 )
 
 type rawFile struct {
 	txns    []rawTxn
 	headers map[string]string
+	last4   string
 }
 
 type rawTxn struct {
@@ -45,6 +47,7 @@ type Transaction struct {
 
 type Statement struct {
 	StartDate, EndDate time.Time
+	Last4              string
 	Transactions       []Transaction
 }
 
@@ -70,7 +73,7 @@ func interpret(raw *rawFile) (*Statement, error) {
 	if !ok {
 		return nil, fmt.Errorf("Missing date header. Got: %#v", raw.headers)
 	}
-	stmt := &Statement{}
+	stmt := &Statement{Last4: raw.last4}
 
 	dateMatch := DatePat.FindStringSubmatch(dateHdr)
 	if dateMatch != nil {
@@ -126,6 +129,7 @@ func writeCsv(path string, stmt *Statement) error {
 	for _, txn := range stmt.Transactions {
 		write.Write([]string{
 			txn.Category,
+			stmt.Last4,
 			txn.Date.Format("2006-01-02"),
 			txn.Descriptor,
 			strconv.FormatInt(txn.Amount, 10),
@@ -177,16 +181,21 @@ func processOne(path string) error {
 		if bytes.IndexByte(line, '`') > 0 {
 			line = bytes.Replace(line, []byte{'`'}, nil, -1)
 		}
-		sectMatch := SectionPat.FindSubmatch(line)
-		if sectMatch != nil {
+
+		if sectMatch := SectionPat.FindSubmatch(line); sectMatch != nil {
 			section = string(sectMatch[1])
 			continue
 		}
-		hdrMatch := HeaderPat.FindSubmatch(line)
-		if hdrMatch != nil {
+
+		if hdrMatch := HeaderPat.FindSubmatch(line); hdrMatch != nil {
 			raw.headers[string(hdrMatch[1])] = string(hdrMatch[2])
 			continue
 		}
+		if panMatch := PANPat.FindSubmatch(line); panMatch != nil {
+			raw.last4 = string(panMatch[2])
+			continue
+		}
+
 		matches := TxnPat.FindSubmatch(line)
 		if matches == nil {
 			continue
