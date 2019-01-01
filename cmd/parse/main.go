@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"nelhage.com/ccstatements/money"
 )
 
 var (
@@ -57,15 +59,6 @@ func parseAmount(amount string) (int64, error) {
 	amount = strings.Replace(amount, ".", "", 1)
 	amount = strings.Replace(amount, "$", "", 1)
 	return strconv.ParseInt(amount, 10, 64)
-}
-
-func formatCents(amt int64) string {
-	signum := '+'
-	if amt < 0 {
-		signum = '-'
-		amt = -amt
-	}
-	return fmt.Sprintf("%c%d.%02d", signum, amt/100, amt%100)
 }
 
 func interpret(raw *rawFile) (*Statement, error) {
@@ -234,7 +227,7 @@ func processOne(path string) error {
 	fmt.Printf("# statement: %s\n", path)
 	fmt.Printf("TOTALS\n")
 	for cat, amt := range totals {
-		fmt.Printf("%30s %s\n", cat, formatCents(amt))
+		fmt.Printf("%30s %s\n", cat, money.FormatCents(amt))
 	}
 	if *debug {
 		fmt.Printf("\nHEADERS\n")
@@ -254,8 +247,8 @@ func processOne(path string) error {
 		}
 		if headerAmt != totals[expect.section] {
 			return fmt.Errorf("Mismatch: %v(%s) != %v(%s)",
-				expect.section, formatCents(totals[expect.section]),
-				expect.header, formatCents(headerAmt),
+				expect.section, money.FormatCents(totals[expect.section]),
+				expect.header, money.FormatCents(headerAmt),
 			)
 		}
 	}
