@@ -71,6 +71,8 @@ func processOne(path string) error {
 	defer fh.Close()
 	read := csv.NewReader(fh)
 
+	fmt.Printf("; -*- mode: ledger -*-\n\n")
+
 	for {
 		fields, err := read.Read()
 		if err == io.EOF {
