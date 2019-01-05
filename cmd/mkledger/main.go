@@ -65,6 +65,10 @@ func categorize(date time.Time, descriptor string) string {
 	return "Expenses:Unknown"
 }
 
+const (
+	CatRedemptions = "PURCHASES AND REDEMPTIONS"
+)
+
 func processOne(path string) error {
 	fh, err := os.Open(path)
 	if err != nil {
@@ -84,7 +88,10 @@ func processOne(path string) error {
 			return err
 		}
 
-		// category := fields[0]
+		category := fields[0]
+		if category == CatRedemptions {
+			continue
+		}
 		last4 := fields[1]
 		date, err := time.Parse("2006-01-02", fields[2])
 		if err != nil {
