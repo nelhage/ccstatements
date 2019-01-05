@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/csv"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -14,47 +15,19 @@ import (
 	"nelhage.com/ccstatements/money"
 )
 
-type pattern struct {
-	pat     string
-	date    string
-	account string
-}
-
-var patterns = []pattern{}
-
 type compiledPattern struct {
 	pat     *regexp.Regexp
 	date    time.Time
 	account string
 }
 
-var compiledPatterns []compiledPattern
-
-func init() {
-	for _, pat := range patterns {
-		comp := compiledPattern{
-			pat:     regexp.MustCompile(pat.pat),
-			account: pat.account,
-		}
-
-		if pat.date != "" {
-			var err error
-			comp.date, err = time.Parse("2006-01-02", pat.date)
-			if err != nil {
-				log.Fatalf("pattern: parse: %q: %v", pat.date, err)
-			}
-		}
-		compiledPatterns = append(compiledPatterns, comp)
-	}
-}
-
 var paymentPat = regexp.MustCompile("(AUTOMATIC PAYMENT - THANK YOU)|(PAYMENT THANK YOU)")
 
-func categorize(date time.Time, descriptor string) string {
+func categorize(pats []compiledPattern, date time.Time, descriptor string) string {
 	if paymentPat.MatchString(descriptor) {
 		return "Assets:Checking"
 	}
-	for _, pat := range compiledPatterns {
+	for _, pat := range pats {
 		if !pat.pat.MatchString(descriptor) {
 			continue
 		}
@@ -69,15 +42,13 @@ const (
 	CatRedemptions = "PURCHASES AND REDEMPTIONS"
 )
 
-func processOne(path string) error {
+func processOne(pats []compiledPattern, path string) error {
 	fh, err := os.Open(path)
 	if err != nil {
 		return err
 	}
 	defer fh.Close()
 	read := csv.NewReader(fh)
-
-	fmt.Printf("; -*- mode: ledger -*-\n\n")
 
 	for {
 		fields, err := read.Read()
@@ -103,7 +74,7 @@ func processOne(path string) error {
 			return err
 		}
 
-		account := categorize(date, descriptor)
+		account := categorize(pats, date, descriptor)
 		fmt.Printf("%s %s\n", date.Format("2006-01-02"), descriptor)
 		fmt.Printf("  Liabilities:%s  $ %s\n", last4, money.FormatCents(-amount))
 		fmt.Printf("  %s\n", account)
@@ -113,11 +84,75 @@ func processOne(path string) error {
 	return nil
 }
 
+func loadPatterns(path string) ([]compiledPattern, error) {
+	var patterns []compiledPattern
+
+	fh, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer fh.Close()
+	read := csv.NewReader(fh)
+
+	for {
+		fields, err := read.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		if len(fields) < 3 {
+			return nil, errors.New("not enough fields")
+		}
+
+		reText := fields[0]
+		date := fields[1]
+		account := fields[2]
+
+		re, err := regexp.Compile(reText)
+		if err != nil {
+			return nil, err
+		}
+
+		comp := compiledPattern{
+			pat:     re,
+			account: account,
+		}
+
+		if date != "" {
+			var err error
+			comp.date, err = time.Parse("2006-01-02", date)
+			if err != nil {
+				return nil, fmt.Errorf("pattern: parse: %q: %v", date, err)
+			}
+		}
+		patterns = append(patterns, comp)
+	}
+
+	return patterns, nil
+}
+
 func main() {
+	var (
+		patCsv = flag.String("patterns", "", "Path to an attribution-pattern CSV")
+	)
 	flag.Parse()
 
+	var pats []compiledPattern
+	if *patCsv != "" {
+		var err error
+		pats, err = loadPatterns(*patCsv)
+		if err != nil {
+			log.Fatalf("parsing patterns: %v", err)
+		}
+	}
+
+	fmt.Printf("; -*- mode: ledger -*-\n\n")
+
 	for _, path := range flag.Args() {
-		if err := processOne(path); err != nil {
+		if err := processOne(pats, path); err != nil {
 			log.Fatalf("%s: %v", path, err)
 		}
 	}
