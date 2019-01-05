@@ -118,7 +118,7 @@ func main() {
 
 	for _, path := range flag.Args() {
 		if err := processOne(path); err != nil {
-			log.Fatal("%s: %v", path, err)
+			log.Fatalf("%s: %v", path, err)
 		}
 	}
 }
