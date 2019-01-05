@@ -48,8 +48,10 @@ func init() {
 	}
 }
 
+var paymentPat = regexp.MustCompile("(AUTOMATIC PAYMENT - THANK YOU)|(PAYMENT THANK YOU)")
+
 func categorize(date time.Time, descriptor string) string {
-	if descriptor == "AUTOMATIC PAYMENT - THANK YOU" {
+	if paymentPat.MatchString(descriptor) {
 		return "Assets:Checking"
 	}
 	for _, pat := range compiledPatterns {
